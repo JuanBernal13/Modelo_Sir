@@ -43,7 +43,7 @@ def run_simulation(replicate_id, max_steps, initial_patients, initial_workers):
     # Muestreo de parámetros para esta réplica
     beta_h, beta_g, sigma, alpha, gamma, gamma_u, mu_i, mu_u, mu_nat = sample_parameters()
 
-    # Crear trabajadores de la salud con posibilidad de estar vacunados, usar mascarillas y resistencia
+    # Crear trabajadores de la salud con posibilidad de estar vacunados, usar Tapabocas y resistencia
     for i in range(initial_workers):
         cell = service.get_random_cell()
         unique_id = f"HW-{uuid.uuid4()}"
@@ -120,7 +120,7 @@ def run_simulation(replicate_id, max_steps, initial_patients, initial_workers):
         icu_occupied.append(occupied)
         icu_capacity_total.append(capacity_total)
 
-        # Guardar tasa de vacunación y uso de mascarillas
+        # Guardar tasa de vacunación y uso de Tapabocas
         vaccination_rates.append(service.get_vaccination_rate())
         total_agents = len(service.workers) + len(service.patients)
         total_mask = sum(1 for w in service.workers if w.wears_mask) + \
@@ -249,7 +249,7 @@ def main():
                       'Camas_Ocupadas_Mean', 'Camas_Ocupadas_Lower', 'Camas_Ocupadas_Upper',
                       'Capacidad_UCI_Mean', 'Capacidad_UCI_Lower', 'Capacidad_UCI_Upper',
                       'Tasa_Vacunacion_Mean', 'Tasa_Vacunacion_Lower', 'Tasa_Vacunacion_Upper',
-                      'Uso_Mascarillas_Mean', 'Uso_Mascarillas_Lower', 'Uso_Mascarillas_Upper']
+                      'Uso_Tapabocas_Mean', 'Uso_Tapabocas_Lower', 'Uso_Tapabocas_Upper']
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
         for i in range(max_steps):
@@ -285,12 +285,12 @@ def main():
                 'Tasa_Vacunacion_Mean': mean_vaccination[i] * 100,
                 'Tasa_Vacunacion_Lower': lower_vaccination[i] * 100,
                 'Tasa_Vacunacion_Upper': upper_vaccination[i] * 100,
-                'Uso_Mascarillas_Mean': mean_masks[i] * 100,
-                'Uso_Mascarillas_Lower': lower_masks[i] * 100,
-                'Uso_Mascarillas_Upper': upper_masks[i] * 100
+                'Uso_Tapabocas_Mean': mean_masks[i] * 100,
+                'Uso_Tapabocas_Lower': lower_masks[i] * 100,
+                'Uso_Tapabocas_Upper': upper_masks[i] * 100
             })
 
-    service.logger.info("Resultados guardados en 'resultados_simulacion_klebsiella.csv'.")
+    #service.logger.info("Resultados guardados en 'resultados_simulacion_klebsiella.csv'.")
 
 if __name__ == "__main__":
     main()
