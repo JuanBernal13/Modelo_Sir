@@ -31,17 +31,22 @@ class Agent:
         pass
 
     def _prob(self, rate):
+        """
+        Dada una tasa continua 'rate', se transforma a probabilidad de suceso
+        en un intervalo de tiempo (asumido = 1 step).
+        """
         return 1 - math.exp(-rate)
 
 class HealthcareWorker(Agent):
     """
     Trabajador de la salud con estados SEIURD.
-    Adaptado para \textit{Klebsiella pneumoniae}.
+    Adaptado para Klebsiella pneumoniae.
     """
     def __init__(
         self, unique_id, cell,
-        beta_h, sigma, alpha, gamma, gamma_u,
+        beta_h, sigma, alpha, gamma_, gamma_u,
         mu_i, mu_u, mu_nat,
+        p_resus,               # ### ADAPTACIÓN SEIURD: Tasa de re-susceptibilización
         age=None,
         use_probabilistic=True,
         vaccinated=False,
@@ -52,21 +57,21 @@ class HealthcareWorker(Agent):
         self.state = EpidemicState.S
         self.vaccinated = vaccinated
         self.wears_mask = wears_mask
-        self.resistant = resistant  # Indica si el agente es resistente a antibióticos
-
-        self.severity = 1  # 
+        self.resistant = resistant  
 
         # Tasas epidemiológicas
         self.beta_h = beta_h
         self.sigma = sigma
         self.alpha = alpha
-        self.gamma = gamma
+        self.gamma = gamma_
         self.gamma_u = gamma_u
         self.mu_i = mu_i
         self.mu_u = mu_u
+        self.p_resus = p_resus  # ### ADAPTACIÓN SEIURD
 
+        # Ajuste de edad
         if age is None:
-            age = random.gauss(40, 10)  # Promedio 40 años, std 10
+            age = random.gauss(40, 10)  
         self.age = age
 
         # Escalamos la mortalidad natural con base en la edad
@@ -77,7 +82,7 @@ class HealthcareWorker(Agent):
 
     def step(self, current_step, simulation_service):
         if self.state == EpidemicState.D:
-            return  # Ya fallecido, no hace nada
+            return  # Agente fallecido => no hace nada
 
         # 1) Muerte natural
         p_death_nat = self._prob(self.mu_nat)
@@ -92,21 +97,25 @@ class HealthcareWorker(Agent):
             total_i = simulation_service.get_total_infectious()
             total_pop = simulation_service.get_total_population()
             if total_pop > 0:
-                # Si vacunado, reducir la tasa de infección
-                beta = self.beta_h * (0.5 if self.vaccinated else 1.0)
-                # Si usa tapabocas, reducir la tasa de infección
-                beta *= 0.7 if self.wears_mask else 1.0
-                lam = beta * (total_i / total_pop)
+                # ### ADAPTACIÓN SEIURD: Reducir beta si vacunado y/o usa mascarilla
+                beta_eff = self.beta_h
+                if self.vaccinated:
+                    beta_eff *= 0.5
+                if self.wears_mask:
+                    beta_eff *= 0.7
+
+                lam = beta_eff * (total_i / total_pop)
                 p_inf = self._prob(lam)
                 if random.random() < p_inf:
                     self.state = EpidemicState.E
-                    simulation_service.logger.debug(f"{self.unique_id} ha sido expuesto (E).")
+                    simulation_service.logger.debug(f"{self.unique_id} ha pasado a E (expuesto).")
 
         elif self.state == EpidemicState.E:
+            # E->I a tasa sigma
             p_ei = self._prob(self.sigma)
             if random.random() < p_ei:
                 self.state = EpidemicState.I
-                simulation_service.logger.debug(f"{self.unique_id} se ha infectado (I).")
+                simulation_service.logger.debug(f"{self.unique_id} ha pasado a I (infectado).")
 
         elif self.state == EpidemicState.I:
             # Probabilidad de muerte en I
@@ -114,87 +123,83 @@ class HealthcareWorker(Agent):
             if random.random() < p_id:
                 self.state = EpidemicState.D
                 simulation_service.register_death(self)
-                simulation_service.logger.debug(f"{self.unique_id} falleció en estado I.")
+                simulation_service.logger.debug(f"{self.unique_id} falleció en I.")
             else:
                 # Probabilidad de ingresar a UCI
                 p_iu = self._prob(self.alpha)
                 if random.random() < p_iu:
                     simulation_service.request_icu(self)
                 else:
-                    # Recuperación, afectada por resistencia a antibióticos
-                    if self.resistant:
-                        adjusted_gamma = self.gamma * 0.5  # Reducción de la tasa de recuperación
-                    else:
-                        adjusted_gamma = self.gamma
+                    # Recuperación afectada por resistencia a antibióticos
+                    adjusted_gamma = self.gamma * (0.5 if self.resistant else 1.0)
                     p_ir = self._prob(adjusted_gamma)
                     if random.random() < p_ir:
                         self.state = EpidemicState.R
-                        simulation_service.logger.debug(f"{self.unique_id} se ha recuperado (R).")
+                        simulation_service.logger.debug(f"{self.unique_id} se recuperó (R).")
 
         elif self.state == EpidemicState.U:
-            # En UCI, probabilidades de muerte o recuperación
+            # En UCI: muerte o recuperación
             p_ud = self._prob(self.mu_u)
             if random.random() < p_ud:
                 self.state = EpidemicState.D
                 simulation_service.register_death(self)
                 self.current_cell.free_bed()
-                simulation_service.logger.debug(f"{self.unique_id} falleció en UCI.")
+                simulation_service.logger.debug(f"{self.unique_id} falleció en U.")
             else:
-                if self.resistant:
-                    adjusted_gamma_u = self.gamma_u * 0.5  # Reducción de la tasa de recuperación en UCI
-                else:
-                    adjusted_gamma_u = self.gamma_u
+                adjusted_gamma_u = self.gamma_u * (0.5 if self.resistant else 1.0)
                 p_ur = self._prob(adjusted_gamma_u)
                 if random.random() < p_ur:
                     self.state = EpidemicState.R
                     self.current_cell.free_bed()
-                    simulation_service.logger.debug(f"{self.unique_id} se ha recuperado de UCI (R).")
+                    simulation_service.logger.debug(f"{self.unique_id} se recuperó desde UCI (R).")
 
         elif self.state == EpidemicState.R:
-            # Re-susceptibilización con baja probabilidad
-            p_resus = 0.001  # 0.1% por paso
-            if random.random() < p_resus:
+            # ### ADAPTACIÓN SEIURD: Re-susceptibilización
+            p_rs = self._prob(self.p_resus)
+            if random.random() < p_rs:
                 self.state = EpidemicState.S
-                simulation_service.logger.debug(f"{self.unique_id} se ha re-susceptibilizado (S).")
+                simulation_service.logger.debug(f"{self.unique_id} R->S (re-susceptibilizado).")
 
-        # 3) Movilidad más personalizada
-        mobility_factor = 0.1 + (50 - self.age) * 0.001  # Menor movilidad si mayor
-        mobility_factor = min(max(mobility_factor, 0.05), 0.2)  # Limitar entre 0.05 y 0.2
+        # 3) Movilidad
+        mobility_factor = 0.1 + (50 - self.age)*0.001
+        mobility_factor = min(max(mobility_factor, 0.05), 0.2)
         if random.random() < mobility_factor:
             simulation_service.move_agent(self)
 
 class Patient(Agent):
     """
     Paciente con estados SEIURD.
-    Adaptado para \textit{Klebsiella pneumoniae}.
+    Adaptado para Klebsiella pneumoniae.
     """
     def __init__(
         self, unique_id, cell,
-        beta_g, sigma, alpha, gamma, gamma_u,
+        beta_g, sigma, alpha, gamma_, gamma_u,
         mu_i, mu_u, mu_nat,
+        p_resus,               # ### ADAPTACIÓN SEIURD
         severity=1,
         age=None,
         use_probabilistic=True,
         vaccinated=False,
         wears_mask=True,
-        resistant=False  # Nuevo atributo para resistencia a antibióticos
+        resistant=False
     ):
         super().__init__(unique_id, cell)
         self.state = EpidemicState.S
         self.vaccinated = vaccinated
         self.wears_mask = wears_mask
-        self.resistant = resistant  # Indica si el paciente es resistente a antibióticos
+        self.resistant = resistant
 
         self.beta_g = beta_g
         self.sigma = sigma
         self.alpha = alpha
-        self.gamma = gamma
+        self.gamma = gamma_
         self.gamma_u = gamma_u
         self.mu_i = mu_i
         self.mu_u = mu_u
+        self.p_resus = p_resus  # ### ADAPTACIÓN SEIURD
 
         if age is None:
-            age = random.gauss(65, 15)  # Pacientes mayores, p.ej. media=65, std=15
+            age = random.gauss(65, 15)  
         self.age = age
 
         # Ajustamos la mortalidad natural según la edad
@@ -202,17 +207,13 @@ class Patient(Agent):
         self.mu_nat = mu_nat * age_factor
 
         self.use_probabilistic = use_probabilistic
-
-        # Severidad para triaje (1: leve, 2: moderado, 3: grave)
-        self.severity = severity  # Puede ser determinado al crear el paciente
-
-        # Tiempo en UCI
+        self.severity = severity  # (1: leve, 2: moderado, 3: grave)
         self.icu_time = 0
-        self.max_icu_time = 14  # Días en UCI
+        self.max_icu_time = 14
 
     def step(self, current_step, simulation_service):
         if self.state == EpidemicState.D:
-            return  # Fallecido => no hace nada
+            return
 
         # 1) Muerte natural
         p_death_nat = self._prob(self.mu_nat)
@@ -227,96 +228,92 @@ class Patient(Agent):
             total_i = simulation_service.get_total_infectious()
             total_pop = simulation_service.get_total_population()
             if total_pop > 0:
-                # Si vacunado, reducir la tasa de infección
-                beta = self.beta_g * (0.5 if self.vaccinated else 1.0)
-                # Si usa tapabocas, reducir la tasa de infección
-                beta *= 0.7 if self.wears_mask else 1.0
-                lam = beta * (total_i / total_pop)
+                beta_eff = self.beta_g
+                if self.vaccinated:
+                    beta_eff *= 0.5
+                if self.wears_mask:
+                    beta_eff *= 0.7
+
+                lam = beta_eff * (total_i / total_pop)
                 p_inf = self._prob(lam)
                 if random.random() < p_inf:
                     self.state = EpidemicState.E
-                    simulation_service.logger.debug(f"{self.unique_id} ha sido expuesto (E).")
+                    simulation_service.logger.debug(f"{self.unique_id} S->E (Expuesto).")
 
         elif self.state == EpidemicState.E:
             p_ei = self._prob(self.sigma)
             if random.random() < p_ei:
                 self.state = EpidemicState.I
-                simulation_service.logger.debug(f"{self.unique_id} se ha infectado (I).")
+                simulation_service.logger.debug(f"{self.unique_id} E->I (Infectado).")
 
         elif self.state == EpidemicState.I:
-            # Probabilidad de muerte en I
             p_id = self._prob(self.mu_i)
             if random.random() < p_id:
                 self.state = EpidemicState.D
                 simulation_service.register_death(self)
-                simulation_service.logger.debug(f"{self.unique_id} falleció en estado I.")
+                simulation_service.logger.debug(f"{self.unique_id} falleció en I.")
             else:
-                # Probabilidad de ingresar a UCI basada en severidad y vacunación
+                # Probabilidad de ingresar a UCI con factor severidad + vacunación
                 adjusted_alpha = self.alpha * self.severity * (0.8 if self.vaccinated else 1.0)
                 p_iu = self._prob(adjusted_alpha)
                 if random.random() < p_iu:
                     simulation_service.request_icu(self)
                 else:
-                    # Recuperación, afectada por resistencia a antibióticos
-                    if self.resistant:
-                        adjusted_gamma = self.gamma * 0.5  # Reducción de la tasa de recuperación
-                    else:
-                        adjusted_gamma = self.gamma
+                    adjusted_gamma = self.gamma * (0.5 if self.resistant else 1.0)
                     p_ir = self._prob(adjusted_gamma)
                     if random.random() < p_ir:
                         self.state = EpidemicState.R
-                        simulation_service.logger.debug(f"{self.unique_id} se ha recuperado (R).")
+                        simulation_service.logger.debug(f"{self.unique_id} I->R (Recuperado).")
 
         elif self.state == EpidemicState.U:
+            # Manejo de días en UCI
             self.icu_time += 1
             if self.icu_time >= self.max_icu_time:
-                # Decisión de recuperación o fallecimiento
+                # Al final de max_icu_time, se decide muerte o recuperación
                 p_ud = self._prob(self.mu_u)
                 if random.random() < p_ud:
                     self.state = EpidemicState.D
                     simulation_service.register_death(self)
-                    simulation_service.logger.debug(f"{self.unique_id} falleció en UCI tras {self.icu_time} días.")
+                    simulation_service.logger.debug(f"{self.unique_id} falleció en U tras {self.icu_time} días.")
                 else:
-                    # Recuperación, afectada por resistencia a antibióticos
-                    if self.resistant:
-                        adjusted_gamma_u = self.gamma_u * 0.5  # Reducción de la tasa de recuperación en UCI
-                    else:
-                        adjusted_gamma_u = self.gamma_u
+                    adjusted_gamma_u = self.gamma_u * (0.5 if self.resistant else 1.0)
                     p_ur = self._prob(adjusted_gamma_u)
                     if random.random() < p_ur:
                         self.state = EpidemicState.R
                         simulation_service.register_recovery_from_icu(self)
-                        simulation_service.logger.debug(f"{self.unique_id} se ha recuperado de UCI tras {self.icu_time} días.")
+                        simulation_service.logger.debug(f"{self.unique_id} se recuperó de U tras {self.icu_time} días.")
             else:
-                # Probabilidades de muerte o recuperación por paso
+                # En cada paso, también puede morir o recuperarse
                 p_ud = self._prob(self.mu_u)
                 if random.random() < p_ud:
                     self.state = EpidemicState.D
                     simulation_service.register_death(self)
                     self.current_cell.free_bed()
-                    simulation_service.logger.debug(f"{self.unique_id} falleció en UCI.")
+                    simulation_service.logger.debug(f"{self.unique_id} falleció en U.")
                 else:
-                    # Recuperación, afectada por resistencia a antibióticos
-                    if self.resistant:
-                        adjusted_gamma_u = self.gamma_u * 0.5
-                    else:
-                        adjusted_gamma_u = self.gamma_u
+                    adjusted_gamma_u = self.gamma_u * (0.5 if self.resistant else 1.0)
                     p_ur = self._prob(adjusted_gamma_u)
                     if random.random() < p_ur:
                         self.state = EpidemicState.R
                         self.current_cell.free_bed()
-                        simulation_service.logger.debug(f"{self.unique_id} se ha recuperado de UCI (R).")
+                        simulation_service.logger.debug(f"{self.unique_id} se recuperó de U (R).")
 
         elif self.state == EpidemicState.R:
-            # Alta del sistema con cierta probabilidad
-            discharge_prob = 0.005  # 0.5% por paso => ~ diaria
-            if random.random() < discharge_prob:
-                simulation_service.remove_patient(self)
-                simulation_service.logger.debug(f"{self.unique_id} ha sido dado de alta del sistema.")
-                return
+            # ### ADAPTACIÓN SEIURD: Re-susceptibilización = p_resus
+            p_rs = self._prob(self.p_resus)
+            if random.random() < p_rs:
+                self.state = EpidemicState.S
+                simulation_service.logger.debug(f"{self.unique_id} R->S (re-susceptibilizado).")
+            else:
+                # Dar de alta con cierta probabilidad
+                discharge_prob = 0.005
+                if random.random() < discharge_prob:
+                    simulation_service.remove_patient(self)
+                    simulation_service.logger.debug(f"{self.unique_id} ha sido dado de alta (R).")
+                    return
 
-        # 3) Movilidad aleatoria más personalizada
-        mobility_factor = 0.05 + (50 - self.age) * 0.0005  # Menor movilidad si mayor
-        mobility_factor = min(max(mobility_factor, 0.02), 0.1)  
+        # 3) Movilidad
+        mobility_factor = 0.05 + (50 - self.age) * 0.0005
+        mobility_factor = min(max(mobility_factor, 0.02), 0.1)
         if random.random() < mobility_factor:
             simulation_service.move_agent(self)
