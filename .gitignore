@@ -1,2 +1,13 @@
 *.csv
 *.png
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+*.log
+.vscode/
+.idea/
+*.iml
+logs/
+*.log
+debug.log
